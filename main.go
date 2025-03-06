@@ -1,7 +1,15 @@
 package main
 
-import "github.com/hblocks/keyless/pkg/zk/prover/kProof"
+import (
+	"fmt"
+	"github.com/hblocks/keyless/pkg/commitment"
+)
 
 func main() {
-	kProof.BlsVerify()
+	//kProof.BlsVerify()
+	commitment.KzgCommitment()
+	commitment.KzgCommitmentAndVerificationDemo()
+
+	fmt.Println("////////////////////////////pedersen demo")
+	commitment.PedersenTest()
 }

@@ -112,9 +112,7 @@ func generateTemplate(prod string, fs embed.FS) error {
 			EnumID:  curve.String(), // e.g. "bn254", "bls12_377", "bw6_761", etc.
 		}
 
-		dir, _ := os.Getwd()
-
-		f, err := os.Create(dir + "/generated_" + curve.String() + "_" + prod + ".go")
+		f, err := os.Create("./generated_" + curve.String() + "_" + prod + ".go")
 		if err != nil {
 			log.Fatalf("error creating file %s: %v", "generated_"+curve.String()+"_"+prod+".go", err)
 		}
