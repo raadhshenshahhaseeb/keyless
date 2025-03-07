@@ -3,6 +3,7 @@ module github.com/hblocks/keyless
 go 1.24.0
 
 require (
+	github.com/PolyhedraZK/ExpanderCompilerCollection v1.0.0
 	github.com/btcsuite/btcd v0.24.2
 	github.com/btcsuite/btcd/btcutil v1.1.6
 	github.com/consensys/gnark v0.12.0
@@ -10,6 +11,7 @@ require (
 	github.com/ethereum/go-ethereum v1.15.5
 	github.com/pkg/errors v0.9.1
 	github.com/sirupsen/logrus v1.9.3
+	golang.org/x/crypto v0.32.0
 )
 
 require (
@@ -45,7 +47,6 @@ require (
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	golang.org/x/crypto v0.32.0 // indirect
 	golang.org/x/sync v0.10.0 // indirect
 	golang.org/x/sys v0.29.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

@@ -1,15 +1,14 @@
 package main
 
 import (
-	"fmt"
-	"github.com/hblocks/keyless/pkg/commitment"
+	circuit "github.com/hblocks/keyless/pkg/zk/prover"
 )
 
 func main() {
-	//kProof.BlsVerify()
-	commitment.KzgCommitment()
-	commitment.KzgCommitmentAndVerificationDemo()
+	cc, err := circuit.PedersenProver()
+	if err != nil {
+		panic(err)
+	}
 
-	fmt.Println("////////////////////////////pedersen demo")
-	commitment.PedersenTest()
+	circuit.Prover(cc)
 }

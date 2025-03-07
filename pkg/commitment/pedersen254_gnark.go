@@ -3,13 +3,12 @@ package commitment
 import (
 	"crypto/rand"
 	"fmt"
-	"golang.org/x/crypto/bn256"
 	"math/big"
 
-	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/pedersen"
+	"golang.org/x/crypto/bn256"
 )
 
 // -----------------------------------------------------------------------------
@@ -80,17 +79,30 @@ func ExampleSinglePedersen() {
 // -----------------------------------------------------------------------------
 func ExampleBatchSameVK() {
 	fmt.Println("---- [Batch Pedersen: Same VK] ----")
-	_, _, g1a, _ := generate()
-	// We'll do 2 separate commitments, each over 3 field elements, all under the same verifying key.
+	_, _, g1aff, _ := Generate()
+
+	// Generate additional G1 points by doubling
+	var g12aff, g13aff bn254.G1Affine
+
+	// Double g1aff to get g12aff
+	var temp bn254.G1Jac
+	temp.FromAffine(&g1aff)
+	temp.Double(&temp)
+	g12aff.FromJacobian(&temp)
+
+	// Double again to get g13aff
+	temp.Double(&temp)
+	g13aff.FromJacobian(&temp)
+
+	// We'll do 2 separate commitments, each over 3 field elements
 	nbValues := 3
 	basis := make([]bn254.G1Affine, nbValues)
-	for i := 0; i < nbValues; i++ {
-		basis[i] = g1a
-	}
+	basis[0] = g1aff
+	basis[1] = g12aff
+	basis[2] = g13aff
 
-	// If we want 2 sets of bases, but they're the same, replicate in a double-slice:
+	// Create two identical sets of bases
 	bases := [][]bn254.G1Affine{basis, basis}
-	// => We'll get pk[0] and pk[1], but share one verifying key vk.
 
 	pk, vk, err := pedersen.Setup(bases)
 	if err != nil {
@@ -145,10 +157,13 @@ func ExampleBatchSameVK() {
 	// We also fold the two commitments into one
 	commitFold := bn254.G1Affine{}
 	commitFold.Set(&commitA)
-	// fold commitB with the same "42"
-	if _, err := commitFold.Fold([]bn254.G1Affine{commitB}, combinationCoeff, ecc.MultiExpConfig{NbTasks: 1}); err != nil {
-		panic(err)
-	}
+	// fold commitB with the same combination coefficient
+	var commitBScaled bn254.G1Jac
+	commitBScaled.FromAffine(&commitB)
+	commitBScaled.ScalarMultiplication(&commitBScaled, combinationCoeff.BigInt(new(big.Int)))
+	var temp2 bn254.G1Affine
+	temp2.FromJacobian(&commitBScaled)
+	commitFold.Add(&commitFold, &temp2)
 
 	// Verify the folded commitment + single batch proof
 	if err := vk.Verify(commitFold, batchProof); err != nil {
@@ -167,18 +182,28 @@ func ExampleBatchSameVK() {
 func ExampleBatchMultiVK() {
 	fmt.Println("---- [Batch Pedersen: Multiple VK Example] ----")
 
-	// We want two COMPLETELY separate setups, each with 2 basis points.
-	// => By default, each call to Setup uses a different G2 generator => "parameter mismatch" for BatchVerifyMultiVk.
-	// => We'll fix that by specifying the same G2 generator manually.
+	// 1) Create random generators to share
+	_, _, g1aff, g2aff := Generate()
 
-	// 1) Create a single random G2 generator to share
-	_, _, g1aff, g2aff := generate()
-	//g12aff := g1aff.Double(&g1aff)
-	//g13aff := g1aff.Double(g12aff)
-	//g14aff := g1aff.Double(g13aff)
+	// Generate additional G1 points by doubling
+	var g12aff, g13aff, g14aff bn254.G1Affine
 
-	// 2) Setup #1
-	basis1 := []bn254.G1Affine{g1aff, g1aff}
+	// Double g1aff to get g12aff
+	var temp bn254.G1Jac
+	temp.FromAffine(&g1aff)
+	temp.Double(&temp)
+	g12aff.FromJacobian(&temp)
+
+	// Double again to get g13aff
+	temp.Double(&temp)
+	g13aff.FromJacobian(&temp)
+
+	// Double once more to get g14aff
+	temp.Double(&temp)
+	g14aff.FromJacobian(&temp)
+
+	// 2) Setup #1 with first two G1 points
+	basis1 := []bn254.G1Affine{g1aff, g12aff}
 	pk1, vk1, err := pedersen.Setup(
 		[][]bn254.G1Affine{basis1},
 		pedersen.WithG2Point(g2aff),
@@ -187,11 +212,11 @@ func ExampleBatchMultiVK() {
 		panic(err)
 	}
 
-	// 3) Setup #2
-	basis2 := []bn254.G1Affine{g1aff, g1aff}
+	// 3) Setup #2 with next two G1 points
+	basis2 := []bn254.G1Affine{g13aff, g14aff}
 	pk2, vk2, err := pedersen.Setup(
 		[][]bn254.G1Affine{basis2},
-		pedersen.WithG2Point(g2aff), // must use the same G2
+		pedersen.WithG2Point(g2aff), // using same G2
 	)
 	if err != nil {
 		panic(err)
@@ -240,46 +265,6 @@ func PedersenTest() {
 	ExampleBatchMultiVK()
 }
 
-//// randomG1Affine returns a random subgroup point in G1.
-//func mustRandomG1Affine() bn254.G1Affine {
-//	// 1. Draw a random scalar in [0, GroupOrder-1]
-//	scalar, err := rand.Int(rand.Reader, bn254.ID.BaseField())
-//	if err != nil {
-//		panic(err)
-//	}
-//
-//	// 2. Multiply the BN254 G1 generator by this scalar
-//	//    The generator in Jacobian form is bn254.G1JacBase
-//	var pJac bn254.G1Jac
-//	pJac.ScalarMultiplication(&bn254.G1Jac{
-//		X: fp.NewElement(1),
-//		Y: fp.NewElement(2),
-//	}, scalar)
-//
-//	// 3. Convert from Jacobian to Affine form
-//	var pAff bn254.G1Affine
-//	pAff.FromJacobian(&pJac)
-//
-//	return pAff
-//}
-//
-//// randomG2Affine returns a random subgroup point in G2.
-//func mustRandomG2Affine() bn254.G2Affine {
-//	scalar, err := rand.Int(rand.Reader, bn254.ID.BaseField())
-//	if err != nil {
-//		panic(err)
-//	}
-//	_, g2, _, _ := bn254.Generators()
-//	var pJac bn254.G2Jac
-//	pJac.ScalarMultiplication(&g2, scalar)
-//
-//	// 3. Convert to Affine
-//	var pAff bn254.G2Affine
-//	pAff.FromJacobian(&pJac)
-//
-//	return pAff
-//}
-
-func generate() (g1Jac bn254.G1Jac, g2Jac bn254.G2Jac, g1Aff bn254.G1Affine, g2Aff bn254.G2Affine) {
+func Generate() (g1Jac bn254.G1Jac, g2Jac bn254.G2Jac, g1Aff bn254.G1Affine, g2Aff bn254.G2Affine) {
 	return bn254.Generators()
 }
