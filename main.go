@@ -5,10 +5,5 @@ import (
 )
 
 func main() {
-	cc, err := circuit.PedersenProver()
-	if err != nil {
-		panic(err)
-	}
-
-	circuit.Prover(cc)
+	circuit.RunPedersenCircuitDemo()
 }

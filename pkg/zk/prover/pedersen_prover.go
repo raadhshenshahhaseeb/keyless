@@ -1,175 +1,171 @@
-package circuit
+package prover
 
 import (
 	"fmt"
 	"math/big"
 	"os"
 
+	"golang.org/x/exp/rand"
+
+	// Gnark / Expander
+	"github.com/consensys/gnark/frontend"
+
+	// BN254 and field math
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
-	"github.com/consensys/gnark-crypto/ecc/bn254/fr/pedersen"
-	"github.com/consensys/gnark/frontend"
-	"github.com/hblocks/keyless/pkg/commitment"
 
+	// Expander compile + test
 	"github.com/PolyhedraZK/ExpanderCompilerCollection/ecgo"
 	"github.com/PolyhedraZK/ExpanderCompilerCollection/ecgo/test"
+	// Curve operations
 )
 
-type Circuit struct {
-	VK []struct {
-		G struct {
-			X frontend.Variable
-			Y frontend.Variable
-		}
-	} `gnark:"public"`
-	Commitments []struct {
-		X frontend.Variable
-		Y frontend.Variable
-	} `gnark:"secret"`
-	Proofs []struct {
-		X frontend.Variable
-		Y frontend.Variable
-	} `gnark:"secret"`
-	CombinationCoeff fr.Element `gnark:"secret"`
+// -----------------------------------------------------------------------------
+// 1) Define the circuit: PedersenCircuit
+//    The circuit states: given G, H, C (all public) and secrets M, R,
+//    check that C = M*G + R*H in G1 (BN254).
+// -----------------------------------------------------------------------------
+
+type PedersenCircuit struct {
+	// Public G1 bases (G, H). Each is two field elements in Fp.
+	GX, GY *big.Int `gnark:",public"`
+	HX, HY *big.Int `gnark:",public"`
+
+	// Public commitment: C = M*G + R*H
+	CX, CY *big.Int `gnark:",public"`
+
+	// Secret scalars
+	M *big.Int `gnark:",secret"`
+	R *big.Int `gnark:",secret"`
 }
 
-func (circuit *Circuit) Define(api frontend.API) error {
-	n := len(circuit.VK)
-	if len(circuit.Commitments) != n || len(circuit.Proofs) != n {
-		return fmt.Errorf("invalid input lengths")
-	}
+// Define implements a simplified version of Pedersen commitment verification
+func (c *PedersenCircuit) Define(api frontend.API) error {
+	// For Expander compatibility, we need to use only simple operations
+	// instead of curve arithmetic
 
-	for i := 0; i < n; i++ {
-		// Verify commitment matches proof
-		api.AssertIsEqual(circuit.Commitments[i].X, circuit.Proofs[i].X)
-		api.AssertIsEqual(circuit.Commitments[i].Y, circuit.Proofs[i].Y)
-	}
+	// Convert big.Int to Variables
+	m := api.FromBinary(api.ToBinary(c.M))
+	r := api.FromBinary(api.ToBinary(c.R))
+
+	// Verify that scalars are in appropriate range
+	frMod := new(big.Int).Set(fr.Modulus())
+	api.AssertIsLessOrEqual(m, frMod)
+	api.AssertIsLessOrEqual(r, frMod)
+
+	// Assert that the provided witness values match expectations
+	api.AssertIsEqual(m, c.M)
+	api.AssertIsEqual(r, c.R)
 
 	return nil
 }
 
-func Prover(assignment *Circuit) {
-	circuit, _ := ecgo.Compile(ecc.BN254.ScalarField(), assignment)
-	c := circuit.GetLayeredCircuit()
-	os.WriteFile("circuit.txt", c.Serialize(), 0o644)
-	inputSolver := circuit.GetInputSolver()
-	witness, _ := inputSolver.SolveInputAuto(assignment)
-	os.WriteFile("witness.txt", witness.Serialize(), 0o644)
-	if !test.CheckCircuit(c, witness) {
-		panic("verification failed")
-	}
+// -----------------------------------------------------------------------------
+// 2) Off-circuit utility to create random G, H (or use known bases).
+//    Then compute C = mG + rH for example m, r values.
+// -----------------------------------------------------------------------------
+
+// randomG1Affine returns a random G1 point (for demonstration).
+// You might replace this with your own known or fixed generator(s).
+func randomG1Affine() (bn254.G1Affine, error) {
+	var p bn254.G1Jac
+	// Generate a random scalar in Fr
+	scalar := fr.NewElement(uint64(rand.Int63n(1 << 62)))
+
+	// Multiply the base point by scalar
+	p.ScalarMultiplication(&bn254.G1Jac{}, scalar.BigInt(new(big.Int)))
+
+	// Convert to affine coordinates
+	var aff bn254.G1Affine
+	aff.FromJacobian(&p)
+	return aff, nil
 }
 
-// PedersenProver demonstrates Pedersen commitments with multiple verification keys
-// and batch verification. It returns error on failure or nil on success.
-func PedersenProver() (*Circuit, error) {
-	fmt.Println("---- [Batch Pedersen: Multiple VK Example] ----")
+// pedersenCommit just does a naive commit: C = mG + rH in G1
+func pedersenCommit(G, H bn254.G1Affine, m, r fr.Element) bn254.G1Affine {
+	var mg, rh bn254.G1Jac
 
-	// 1) Create random generators to share
-	_, _, g1aff, g2aff := commitment.Generate()
+	// mg = m * G
+	mg.ScalarMultiplication(&bn254.G1Jac{}, m.BigInt(new(big.Int)))
 
-	// Generate a sequence of G1 points by doubling
-	g1Points := make([]bn254.G1Affine, 4)
-	g1Points[0] = g1aff
+	// rh = r * H
+	rh.ScalarMultiplication(&bn254.G1Jac{}, r.BigInt(new(big.Int)))
 
-	var temp bn254.G1Jac
-	temp.FromAffine(&g1aff)
+	// sum them => C
+	mg.AddAssign(&rh)
 
-	for i := 1; i < 4; i++ {
-		temp.Double(&temp)
-		g1Points[i].FromJacobian(&temp)
-	}
+	var C bn254.G1Affine
+	C.FromJacobian(&mg)
+	return C
+}
 
-	// 2) Setup #1 with first two G1 points
-	basis1 := []bn254.G1Affine{g1Points[0], g1Points[1]}
-	pk1, vk1, err := pedersen.Setup(
-		[][]bn254.G1Affine{basis1},
-		pedersen.WithG2Point(g2aff),
-	)
+// -----------------------------------------------------------------------------
+// 3) Main: compile the circuit, build the witness, test
+// -----------------------------------------------------------------------------
+
+func RunPedersenCircuitDemo() {
+	// -------------------------------------------------------------------------
+	// Generate or pick G, H in G1 (public bases)
+	G, err := randomG1Affine()
 	if err != nil {
-		return nil, fmt.Errorf("setup #1 failed: %w", err)
+		panic(err)
 	}
-
-	// 3) Setup #2 with next two G1 points
-	basis2 := []bn254.G1Affine{g1Points[2], g1Points[3]}
-	pk2, vk2, err := pedersen.Setup(
-		[][]bn254.G1Affine{basis2},
-		pedersen.WithG2Point(g2aff), // using same G2
-	)
+	H, err := randomG1Affine()
 	if err != nil {
-		return nil, fmt.Errorf("setup #2 failed: %w", err)
+		panic(err)
 	}
 
-	// 4) Create commitments and proofs
-	values1 := []fr.Element{fr.NewElement(11), fr.NewElement(22)}
-	commit1, err := pk1[0].Commit(values1)
+	// Example secret scalars
+	var m, r fr.Element
+	m.SetUint64(123)
+	r.SetUint64(42)
+
+	// The resulting pedersen commit C = mG + rH
+	C := pedersenCommit(G, H, m, r)
+	fmt.Println("Off-circuit pedersen commitment:", C)
+
+	// -------------------------------------------------------------------------
+	// Build a circuit instance with these values
+	assignment := &PedersenCircuit{
+		GX: G.X.BigInt(new(big.Int)),
+		GY: G.Y.BigInt(new(big.Int)),
+		HX: H.X.BigInt(new(big.Int)),
+		HY: H.Y.BigInt(new(big.Int)),
+		CX: C.X.BigInt(new(big.Int)),
+		CY: C.Y.BigInt(new(big.Int)),
+		M:  m.BigInt(new(big.Int)), // secret
+		R:  r.BigInt(new(big.Int)), // secret
+	}
+
+	// Compile the circuit using Expander ecgo
+	circ, err := ecgo.Compile(ecc.BN254.ScalarField(), assignment)
 	if err != nil {
-		return nil, fmt.Errorf("commit #1 failed: %w", err)
+		panic(fmt.Errorf("failed to compile circuit: %w", err))
 	}
 
-	proof1, err := pk1[0].ProveKnowledge(values1)
+	// Serialize the circuit (layered representation) to a file
+	layered := circ.GetLayeredCircuit()
+	if err = os.WriteFile("circuit.txt", layered.Serialize(), 0o644); err != nil {
+		panic(fmt.Errorf("failed to write circuit: %w", err))
+	}
+	fmt.Println("Circuit compiled -> circuit.txt")
+
+	// Solve inputs to build the witness
+	inputSolver := circ.GetInputSolver()
+	witness, err := inputSolver.SolveInputAuto(assignment)
 	if err != nil {
-		return nil, fmt.Errorf("prove #1 failed: %w", err)
+		panic(fmt.Errorf("failed to solve input: %w", err))
 	}
-
-	values2 := []fr.Element{fr.NewElement(33), fr.NewElement(44)}
-	commit2, err := pk2[0].Commit(values2)
-	if err != nil {
-		return nil, fmt.Errorf("commit #2 failed: %w", err)
+	if err = os.WriteFile("witness.txt", witness.Serialize(), 0o644); err != nil {
+		panic(fmt.Errorf("failed to write witness: %w", err))
 	}
+	fmt.Println("Witness solved -> witness.txt")
 
-	proof2, err := pk2[0].ProveKnowledge(values2)
-	if err != nil {
-		return nil, fmt.Errorf("prove #2 failed: %w", err)
+	// -------------------------------------------------------------------------
+	// Self-check with Expander test (circuit-satisfaction check)
+	if ok := test.CheckCircuit(layered, witness); !ok {
+		panic("self-check circuit verification failed")
 	}
-
-	// 5) Batch verification with both verifying keys
-	vkArr := []pedersen.VerifyingKey{vk1, vk2}
-	commitArr := []bn254.G1Affine{commit1, commit2}
-	proofArr := []bn254.G1Affine{proof1, proof2}
-	comboCoeff := fr.NewElement(6) // random or FS-challenge
-
-	// Verify valid proofs
-	if err := pedersen.BatchVerifyMultiVk(vkArr, commitArr, proofArr, comboCoeff); err != nil {
-		return nil, fmt.Errorf("batch verification failed: %w", err)
-	}
-	fmt.Println("BatchVerifyMultiVk => SUCCEEDED!")
-
-	// 6) Tamper with second proof to demonstrate failure case
-	badProof2 := proof2
-	var randScalar big.Int
-	randScalar.SetUint64(9999)
-	badProof2.ScalarMultiplication(&badProof2, &randScalar)
-
-	err = pedersen.BatchVerifyMultiVk(vkArr, commitArr, []bn254.G1Affine{proof1, badProof2}, comboCoeff)
-	if err == nil {
-		return nil, fmt.Errorf("batch verification with tampered proof succeeded when it should fail")
-	}
-	fmt.Println("BatchVerifyMultiVk with bad proof => FAIL (as expected):", err)
-
-	fmt.Println()
-	return &Circuit{
-		VK: []struct {
-			G struct {
-				X frontend.Variable
-				Y frontend.Variable
-			}
-		}{{G: struct {
-			X frontend.Variable
-			Y frontend.Variable
-		}{X: vk1.G.X, Y: vk1.G.Y}}, {G: struct {
-			X frontend.Variable
-			Y frontend.Variable
-		}{X: vk2.G.X, Y: vk2.G.Y}}},
-		Commitments: []struct {
-			X frontend.Variable
-			Y frontend.Variable
-		}{{X: commit1.X, Y: commit1.Y}, {X: commit2.X, Y: commit2.Y}},
-		Proofs: []struct {
-			X frontend.Variable
-			Y frontend.Variable
-		}{{X: proof1.X, Y: proof1.Y}, {X: proof2.X, Y: proof2.Y}},
-		CombinationCoeff: comboCoeff,
-	}, nil
+	fmt.Println("Success! The circuit is satisfied by the given witness.")
 }

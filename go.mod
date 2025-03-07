@@ -12,6 +12,7 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/sirupsen/logrus v1.9.3
 	golang.org/x/crypto v0.32.0
+	golang.org/x/exp v0.0.0-20240823005443-9b4947da3948
 )
 
 require (
